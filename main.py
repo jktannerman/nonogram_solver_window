@@ -23,9 +23,7 @@ STATE_COLORS: dict[int, str] = {
 }
 
 # -- Base layout values (scaled per grid at runtime) --------------------------
-_BASE_CELL  = 57   # px per grid square at 1× scale
-_BASE_CLUE  = 40   # px per clue entry box at 1× scale
-_BASE_FONT  = 12   # clue font size at 1× scale
+_BASE_CELL  = 57   # px per grid square at 1× scale (clue boxes match this)
 GRID_LINE_W = 4    # px; not scaled
 
 # -- Estimated fixed overhead *inside* the window (divider, padding) ---------
@@ -67,8 +65,8 @@ class NonogramApp:
 
         # Scaled layout values — updated by _compute_scale() each build
         self._cell_size: int = _BASE_CELL
-        self._clue_box_size: int = _BASE_CLUE
-        self._clue_font: tuple[str, int] = ("Consolas", _BASE_FONT)
+        self._clue_box_size: int = _BASE_CELL
+        self._clue_font: tuple[str, int] = ("Consolas", 12)
 
         self._current_frame: tk.Widget | None = None
         self.canvas: tk.Canvas | None = None
@@ -108,10 +106,15 @@ class NonogramApp:
         self._resize_job = None
         row_vals, col_vals = self._save_entry_clues()
         saved_state = [row[:] for row in self.grid_state]
+        saved_solutions = self._solutions
+        saved_idx = self._solution_idx
         self._build_grid_ui()
         self.grid_state = saved_state
         self._sync_grid_colors()
         self._restore_entry_clues(row_vals, col_vals)
+        if saved_solutions:
+            self._solutions = saved_solutions
+            self._show_solution(saved_idx)
 
     def _save_entry_clues(self) -> tuple[list[list[str]], list[list[str]]]:
         """Return the raw text of every clue entry widget."""
@@ -166,14 +169,14 @@ class NonogramApp:
 
         tk.Label(frame, text="Rows:", bg=COLOR_BG,
                  font=("Segoe UI", 10)).grid(row=1, column=0, sticky="e", padx=8)
-        self._rows_var = tk.StringVar(value="5")
+        self._rows_var = tk.StringVar(value="9")
         rows_entry = tk.Entry(frame, textvariable=self._rows_var, width=6,
                               font=("Segoe UI", 10))
         rows_entry.grid(row=1, column=1, sticky="w")
 
         tk.Label(frame, text="Columns:", bg=COLOR_BG,
                  font=("Segoe UI", 10)).grid(row=2, column=0, sticky="e", padx=8, pady=8)
-        self._cols_var = tk.StringVar(value="5")
+        self._cols_var = tk.StringVar(value="12")
         tk.Entry(frame, textvariable=self._cols_var, width=6,
                  font=("Segoe UI", 10)).grid(row=2, column=1, sticky="w")
 
@@ -217,15 +220,14 @@ class NonogramApp:
         win_h = self.root.winfo_height()
         win_w = self.root.winfo_width()
 
-        # Combined natural height of both canvases at 1× scale:
+        # Combined natural height of both canvases at 1× scale.
+        # Clue boxes are the same size as grid cells, so everything uses _BASE_CELL.
         #   top    = column-clue strip + grid rows
         #   bottom = grid rows only (no clue area above it)
-        combined_h = (self._max_col_clues * _BASE_CLUE
-                      + self.rows * _BASE_CELL          # top grid
-                      + self.rows * _BASE_CELL)         # bottom grid
+        combined_h = (self._max_col_clues + 2 * self.rows) * _BASE_CELL
 
         # Top canvas is wider (includes row-clue strip), so it sets the width limit.
-        top_w = self._max_row_clues * _BASE_CLUE + self.cols * _BASE_CELL
+        top_w = (self._max_row_clues + self.cols) * _BASE_CELL
 
         avail_h = win_h - _OVERHEAD_H
         avail_w = win_w - _OVERHEAD_W
@@ -236,8 +238,9 @@ class NonogramApp:
             s *= 0.92   # safety margin only when scaling down
 
         self._cell_size     = max(8, int(_BASE_CELL * s))
-        self._clue_box_size = max(8, int(_BASE_CLUE * s))
-        font_pt             = max(6, int(_BASE_FONT * s))
+        self._clue_box_size = self._cell_size   # clue slots match grid cells exactly
+        # Target ~75 % of the entry height (cell_size − 4 px); 1 pt ≈ 1.33 px on 96 DPI.
+        font_pt             = max(6, int((self._cell_size - 4) * 0.75 / 1.333))
         self._clue_font     = ("Consolas", font_pt)
 
     # -- Grid screen ----------------------------------------------------------
@@ -347,7 +350,8 @@ class NonogramApp:
         the last column box back to the first row box.
         """
         assert self.canvas is not None
-        ew = max(8, self._clue_box_size - 6)
+        # Entries fill nearly the full cell slot; the 4 px gap matches GRID_LINE_W.
+        ew = max(8, self._cell_size - 4)
 
         # Row clue entries — created first so they appear first in Tab order.
         self.row_clue_entries = []
@@ -355,16 +359,18 @@ class NonogramApp:
             y_mid = self._col_clue_h + r * self._cell_size + self._cell_size // 2
             row_entries: list[tk.Entry] = []
             for k in range(self._max_row_clues):
-                x_mid = k * self._clue_box_size + self._clue_box_size // 2
+                x_mid = k * self._cell_size + self._cell_size // 2
                 entry = tk.Entry(
                     self.canvas, justify="center",
                     font=self._clue_font, relief="ridge", bg=COLOR_CLUE_BG, width=2,
                 )
                 self.canvas.create_window(x_mid, y_mid, window=entry, width=ew, height=ew)
-                entry.bind("<Right>", lambda e, _r=r, _k=k: self._row_focus_right(_r, _k) or "break")
-                entry.bind("<Left>",  lambda e, _r=r, _k=k: self._row_focus_left(_r, _k)  or "break")
-                entry.bind("<Down>",  lambda e, _r=r:        self._row_focus_down(_r)       or "break")
-                entry.bind("<Up>",    lambda e, _r=r:        self._row_focus_up(_r)         or "break")
+                entry.bind("<Right>",    lambda e, _r=r, _k=k: self._row_focus_right(_r, _k) or "break")
+                entry.bind("<Left>",     lambda e, _r=r, _k=k: self._row_focus_left(_r, _k)  or "break")
+                entry.bind("<Down>",     lambda e, _r=r:        self._row_focus_down(_r)       or "break")
+                entry.bind("<Up>",       lambda e, _r=r:        self._row_focus_up(_r)         or "break")
+                entry.bind("<Return>",   lambda e, _r=r:        self._row_enter(_r)            or "break")
+                entry.bind("<KeyRelease>", lambda e, _r=r, _k=k: e.char.isdigit() and self._row_focus_right(_r, _k))
                 row_entries.append(entry)
             self.row_clue_entries.append(row_entries)
 
@@ -374,16 +380,18 @@ class NonogramApp:
             x_mid = self._row_clue_w + c * self._cell_size + self._cell_size // 2
             col_entries: list[tk.Entry] = []
             for k in range(self._max_col_clues):
-                y_mid = k * self._clue_box_size + self._clue_box_size // 2
+                y_mid = k * self._cell_size + self._cell_size // 2
                 entry = tk.Entry(
                     self.canvas, justify="center",
                     font=self._clue_font, relief="ridge", bg=COLOR_CLUE_BG, width=2,
                 )
                 self.canvas.create_window(x_mid, y_mid, window=entry, width=ew, height=ew)
-                entry.bind("<Down>",  lambda e, _c=c, _k=k: self._col_focus_down(_c, _k) or "break")
-                entry.bind("<Up>",    lambda e, _c=c, _k=k: self._col_focus_up(_c, _k)   or "break")
-                entry.bind("<Right>", lambda e, _c=c:        self._col_focus_right(_c)    or "break")
-                entry.bind("<Left>",  lambda e, _c=c:        self._col_focus_left(_c)     or "break")
+                entry.bind("<Down>",     lambda e, _c=c, _k=k: self._col_focus_down(_c, _k) or "break")
+                entry.bind("<Up>",       lambda e, _c=c, _k=k: self._col_focus_up(_c, _k)   or "break")
+                entry.bind("<Right>",    lambda e, _c=c:        self._col_focus_right(_c)    or "break")
+                entry.bind("<Left>",     lambda e, _c=c:        self._col_focus_left(_c)     or "break")
+                entry.bind("<Return>",   lambda e, _c=c:        self._col_enter(_c)          or "break")
+                entry.bind("<KeyRelease>", lambda e, _c=c, _k=k: e.char.isdigit() and self._col_focus_down(_c, _k))
                 col_entries.append(entry)
             self.col_clue_entries.append(col_entries)
 
@@ -416,6 +424,13 @@ class NonogramApp:
         if c + 1 < self.cols:
             self.col_clue_entries[c + 1][0].focus_set()
 
+    def _col_enter(self, c: int) -> None:
+        """Enter in a column box: next column, or wrap to the first row clue."""
+        if c + 1 < self.cols:
+            self.col_clue_entries[c + 1][0].focus_set()
+        else:
+            self.row_clue_entries[0][0].focus_set()
+
     def _col_focus_left(self, c: int) -> None:
         """Move focus to the top of the previous column."""
         if c > 0:
@@ -443,6 +458,13 @@ class NonogramApp:
         """Move focus to the start of the next row."""
         if r + 1 < self.rows:
             self.row_clue_entries[r + 1][0].focus_set()
+
+    def _row_enter(self, r: int) -> None:
+        """Enter in a row box: next row, or wrap to the first column clue."""
+        if r + 1 < self.rows:
+            self.row_clue_entries[r + 1][0].focus_set()
+        else:
+            self.col_clue_entries[0][0].focus_set()
 
     def _row_focus_up(self, r: int) -> None:
         """Move focus to the start of the previous row."""
