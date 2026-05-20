@@ -6,6 +6,8 @@ import math
 import tkinter as tk
 from tkinter import messagebox
 
+from solver import solve
+
 # -- Colours ------------------------------------------------------------------
 COLOR_BLACK   = "#616161"   # confirmed matching (filled)
 COLOR_WHITE   = "#F8F8F8"   # confirmed non-matching (empty)
@@ -58,6 +60,15 @@ class NonogramApp:
         self._current_frame: tk.Widget | None = None
         self.canvas: tk.Canvas | None = None
 
+        # Solution display state
+        self._solutions: list[list[list[int]]] = []
+        self._solution_idx: int = 0
+        self._solution_canvas: tk.Canvas | None = None
+        self._solution_label: tk.StringVar | None = None
+        self._sol_cell_rects: dict[tuple[int, int], int] = {}
+        self._prev_btn: tk.Button | None = None
+        self._next_btn: tk.Button | None = None
+
         self._show_setup()
 
     # -- Setup screen ---------------------------------------------------------
@@ -67,6 +78,7 @@ class NonogramApp:
         if self._current_frame is not None:
             self._current_frame.destroy()
         self.canvas = None
+        self._solution_canvas = None
 
         frame = tk.Frame(self.root, padx=40, pady=40, bg=COLOR_BG)
         frame.pack(fill="both", expand=True)
@@ -119,7 +131,7 @@ class NonogramApp:
     # -- Grid screen ----------------------------------------------------------
 
     def _build_grid_ui(self) -> None:
-        """Build the interactive nonogram grid."""
+        """Build the interactive nonogram grid (top half) and solution panel (bottom half)."""
         if self._current_frame is not None:
             self._current_frame.destroy()
 
@@ -133,16 +145,22 @@ class NonogramApp:
         outer.pack(fill="both", expand=True)
         self._current_frame = outer
 
-        toolbar = tk.Frame(outer, bg=COLOR_BG, pady=6)
+        # ---- Top half: input grid -------------------------------------------
+        top_frame = tk.Frame(outer, bg=COLOR_BG)
+        top_frame.pack(fill="both", expand=True)
+
+        toolbar = tk.Frame(top_frame, bg=COLOR_BG, pady=6)
         toolbar.pack(fill="x", padx=10)
         tk.Button(toolbar, text="New Grid", command=self._show_setup,
                   font=("Segoe UI", 9)).pack(side="left")
+        tk.Button(toolbar, text="Solve", command=self._on_solve,
+                  font=("Segoe UI", 9)).pack(side="left", padx=(8, 0))
 
         total_w = self._row_clue_w + self.cols * CELL_SIZE + GRID_LINE_W
         total_h = self._col_clue_h + self.rows * CELL_SIZE + GRID_LINE_W
 
-        container = tk.Frame(outer, bg=COLOR_BG)
-        container.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        container = tk.Frame(top_frame, bg=COLOR_BG)
+        container.pack(fill="both", expand=True, padx=10, pady=(0, 4))
 
         h_scroll = tk.Scrollbar(container, orient="horizontal")
         v_scroll = tk.Scrollbar(container, orient="vertical")
@@ -152,7 +170,7 @@ class NonogramApp:
         self.canvas = tk.Canvas(
             container,
             width=min(total_w, 960),
-            height=min(total_h, 720),
+            height=min(total_h, 500),
             scrollregion=(0, 0, total_w, total_h),
             xscrollcommand=h_scroll.set,
             yscrollcommand=v_scroll.set,
@@ -170,6 +188,14 @@ class NonogramApp:
         self.canvas.bind("<Button-1>", self._on_click)
         self.canvas.bind("<MouseWheel>", self._on_mousewheel_v)
         self.canvas.bind("<Shift-MouseWheel>", self._on_mousewheel_h)
+
+        # ---- Divider --------------------------------------------------------
+        tk.Frame(outer, height=3, bg=COLOR_GRID).pack(fill="x")
+
+        # ---- Bottom half: solution display ----------------------------------
+        self._solutions = []
+        self._solution_idx = 0
+        self._build_solution_panel(outer)
 
     def _draw_cells(self) -> None:
         """Draw all grid cells as filled rectangles without outlines."""
@@ -311,6 +337,176 @@ class NonogramApp:
         """Scroll the canvas horizontally."""
         assert self.canvas is not None
         self.canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    # -- Solver ---------------------------------------------------------------
+
+    def _collect_clues(self) -> tuple[list[list[int]], list[list[int]]]:
+        """Read clue entry widgets and return (row_clues, col_clues).
+
+        Each entry box holds one non-negative integer; zero and blank entries
+        are skipped so an empty clue list represents an all-white line.
+        """
+        def parse_entries(entries: list[tk.Entry]) -> list[int]:
+            clue: list[int] = []
+            for entry in entries:
+                text = entry.get().strip()
+                if text:
+                    try:
+                        n = int(text)
+                        if n > 0:
+                            clue.append(n)
+                    except ValueError:
+                        pass
+            return clue
+
+        row_clues = [parse_entries(self.row_clue_entries[r]) for r in range(self.rows)]
+        col_clues = [parse_entries(self.col_clue_entries[c]) for c in range(self.cols)]
+        return row_clues, col_clues
+
+    def _on_solve(self) -> None:
+        """Read the current clues and board state, run the solver, show results."""
+        assert self._solution_canvas is not None
+        assert self._solution_label is not None
+        assert self._prev_btn is not None
+        assert self._next_btn is not None
+
+        row_clues, col_clues = self._collect_clues()
+        self._solutions = solve(row_clues, col_clues, self.grid_state)
+
+        if self._solutions:
+            self._show_solution(0)
+        else:
+            self._solution_label.set("No solutions found")
+            self._prev_btn.config(state="disabled")
+            self._next_btn.config(state="disabled")
+            for r in range(self.rows):
+                for c in range(self.cols):
+                    self._solution_canvas.itemconfig(
+                        self._sol_cell_rects[(r, c)], fill=COLOR_BG,
+                    )
+
+    def _on_prev_solution(self) -> None:
+        """Show the previous solution."""
+        if self._solution_idx > 0:
+            self._show_solution(self._solution_idx - 1)
+
+    def _on_next_solution(self) -> None:
+        """Show the next solution."""
+        if self._solution_idx < len(self._solutions) - 1:
+            self._show_solution(self._solution_idx + 1)
+
+    def _show_solution(self, idx: int) -> None:
+        """Render solutions[idx] on the solution canvas and update nav state."""
+        assert self._solution_canvas is not None
+        assert self._solution_label is not None
+        assert self._prev_btn is not None
+        assert self._next_btn is not None
+
+        self._solution_idx = idx
+        n = len(self._solutions)
+        self._solution_label.set(f"Solution {idx + 1} of {n}")
+        self._prev_btn.config(state="normal" if idx > 0 else "disabled")
+        self._next_btn.config(state="normal" if idx < n - 1 else "disabled")
+
+        board = self._solutions[idx]
+        for r in range(self.rows):
+            for c in range(self.cols):
+                self._solution_canvas.itemconfig(
+                    self._sol_cell_rects[(r, c)],
+                    fill=STATE_COLORS[board[r][c]],
+                )
+
+    # -- Solution panel -------------------------------------------------------
+
+    def _build_solution_panel(self, parent: tk.Frame) -> None:
+        """Build the bottom-half solution display inside parent."""
+        bottom_frame = tk.Frame(parent, bg=COLOR_BG)
+        bottom_frame.pack(fill="both", expand=True)
+
+        # Navigation bar
+        nav = tk.Frame(bottom_frame, bg=COLOR_BG, pady=6)
+        nav.pack(fill="x", padx=10)
+
+        self._prev_btn = tk.Button(
+            nav, text="< Previous", font=("Segoe UI", 9),
+            command=self._on_prev_solution, state="disabled",
+        )
+        self._prev_btn.pack(side="left")
+
+        self._solution_label = tk.StringVar(value="Press Solve to find solutions")
+        tk.Label(nav, textvariable=self._solution_label, bg=COLOR_BG,
+                 font=("Segoe UI", 9)).pack(side="left", padx=12)
+
+        self._next_btn = tk.Button(
+            nav, text="Next >", font=("Segoe UI", 9),
+            command=self._on_next_solution, state="disabled",
+        )
+        self._next_btn.pack(side="left")
+
+        # Solution canvas (no clue area — pure grid)
+        sol_total_w = self.cols * CELL_SIZE + GRID_LINE_W
+        sol_total_h = self.rows * CELL_SIZE + GRID_LINE_W
+
+        sol_container = tk.Frame(bottom_frame, bg=COLOR_BG)
+        sol_container.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        sol_h_scroll = tk.Scrollbar(sol_container, orient="horizontal")
+        sol_v_scroll = tk.Scrollbar(sol_container, orient="vertical")
+        sol_h_scroll.pack(side="bottom", fill="x")
+        sol_v_scroll.pack(side="right", fill="y")
+
+        self._solution_canvas = tk.Canvas(
+            sol_container,
+            width=min(sol_total_w, 960),
+            height=min(sol_total_h, 500),
+            scrollregion=(0, 0, sol_total_w, sol_total_h),
+            xscrollcommand=sol_h_scroll.set,
+            yscrollcommand=sol_v_scroll.set,
+            bg=COLOR_BG,
+            highlightthickness=0,
+        )
+        self._solution_canvas.pack(side="left", fill="both", expand=True)
+        sol_h_scroll.config(command=self._solution_canvas.xview)
+        sol_v_scroll.config(command=self._solution_canvas.yview)
+
+        self._solution_canvas.bind("<MouseWheel>", self._on_sol_mousewheel_v)
+        self._solution_canvas.bind("<Shift-MouseWheel>", self._on_sol_mousewheel_h)
+
+        self._draw_solution_grid()
+
+    def _draw_solution_grid(self) -> None:
+        """Draw an empty solution grid (cells and grid lines, no clue widgets)."""
+        assert self._solution_canvas is not None
+        self._sol_cell_rects = {}
+
+        for r in range(self.rows):
+            for c in range(self.cols):
+                x0 = c * CELL_SIZE
+                y0 = r * CELL_SIZE
+                rect_id = self._solution_canvas.create_rectangle(
+                    x0, y0, x0 + CELL_SIZE, y0 + CELL_SIZE,
+                    fill=COLOR_BG, outline="",
+                )
+                self._sol_cell_rects[(r, c)] = rect_id
+
+        x_end = self.cols * CELL_SIZE
+        y_end = self.rows * CELL_SIZE
+        for r in range(self.rows + 1):
+            y = r * CELL_SIZE
+            self._solution_canvas.create_line(0, y, x_end, y, fill=COLOR_GRID, width=GRID_LINE_W)
+        for c in range(self.cols + 1):
+            x = c * CELL_SIZE
+            self._solution_canvas.create_line(x, 0, x, y_end, fill=COLOR_GRID, width=GRID_LINE_W)
+
+    def _on_sol_mousewheel_v(self, event: tk.Event) -> None:
+        """Scroll the solution canvas vertically."""
+        assert self._solution_canvas is not None
+        self._solution_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _on_sol_mousewheel_h(self, event: tk.Event) -> None:
+        """Scroll the solution canvas horizontally."""
+        assert self._solution_canvas is not None
+        self._solution_canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
 
 
 def main() -> None:
