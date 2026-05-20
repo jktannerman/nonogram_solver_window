@@ -6,6 +6,8 @@ A Python desktop application for creating and solving [nonograms](https://en.wik
 
 - **Interactive GUI** — enter grid dimensions, input row/column clues, and paint cells by clicking.
 - **Solver engine** — logical deduction followed by recursive trial-and-error, returning all unique solutions.
+- **Solution browser** — step through all solutions with Previous / Next buttons.
+- **Adaptive layout** — the window opens maximised and rescales both grids to fill the available space whenever the window is resized.
 
 ## Requirements
 
@@ -19,18 +21,30 @@ py -3.13 main.py
 ```
 
 1. Enter the number of rows and columns, then click **Generate Grid**.
-2. Enter clue numbers into the boxes above each column and to the left of each row.
-   - Column clue boxes stack top-to-bottom; navigate with **Down**.
-   - Row clue boxes run left-to-right; navigate with **Right**.
-   - Both sequences wrap: the last column box moves focus to the first row box, and the last row box wraps back to the first column box.
+2. Enter clue numbers into the boxes above each column and to the left of each row.  Each box holds one block length; fill left-to-right for rows and top-to-bottom for columns.
+   - Navigate clue boxes with the arrow keys:
+     - **Down / Up** move between boxes within a column clue; **Right / Left** jump to the top of the next / previous column.
+     - **Right / Left** move between boxes within a row clue; **Down / Up** jump to the start of the next / previous row.
+   - **Tab** cycles through all row boxes then all column boxes, wrapping back to the start.
 3. Click any grid square to cycle its state: **grey** (unknown) → **black** (filled) → **white** (empty) → grey.
-4. Click **New Grid** to return to the size-entry screen.
+4. Click **Solve**. Solutions appear in the lower half of the window.
+   - Use **< Previous** and **Next >** to step through multiple solutions.
+5. Click **New Grid** to return to the size-entry screen.
+
+## Layout
+
+The window is split horizontally into two equal halves:
+
+- **Top half** — the input grid with row and column clue entry boxes.
+- **Bottom half** — a read-only grid showing the current solution.
+
+Both grids use the same cell size, which is computed at startup (and recomputed on resize) so that the combined height of both grids fills the window without overflow.
 
 ## Project structure
 
 ```
 nonogram_solver/
-├── main.py         # tkinter GUI — grid input and visualisation
+├── main.py         # tkinter GUI — grid input, visualisation, solution browser
 ├── solver.py       # solver logic (entry point: solve())
 └── test_solver.py  # pytest tests for deduction and solve()
 ```
