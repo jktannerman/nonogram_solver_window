@@ -5,7 +5,7 @@ A Python desktop application for creating and solving [nonograms](https://en.wik
 ## Features
 
 - **Interactive GUI** — enter grid dimensions, input row/column clues, and paint cells by clicking.
-- **Solver engine** *(in progress)* — logical deduction followed by recursive trial-and-error, returning all unique solutions.
+- **Solver engine** — logical deduction followed by recursive trial-and-error, returning all unique solutions.
 
 ## Requirements
 
@@ -30,8 +30,9 @@ py -3.13 main.py
 
 ```
 nonogram_solver/
-├── main.py      # tkinter GUI — grid input and visualisation
-└── solver.py    # solver logic (entry point: solve())
+├── main.py         # tkinter GUI — grid input and visualisation
+├── solver.py       # solver logic (entry point: solve())
+└── test_solver.py  # pytest tests for deduction and solve()
 ```
 
 ## Solver design (`solver.py`)
@@ -50,17 +51,22 @@ Internally the solver proceeds in two stages:
 
 `_deduce` sweeps every row and column in a loop, applying `_deduce_line` to each until no further progress is made. Row and column sweeps interleave, so a deduction in one direction can immediately unlock new deductions in the other.
 
-`_deduce_line` applies a sequence of tactics:
+`_deduce_line` delegates to a single **brute-force tactic**:
 
-| Tactic | Description |
-|---|---|
-| `_tactic_overlap` | Left-pack and right-pack all blocks; cells covered in both packings are definitely BLACK; cells outside all block ranges in both are definitely WHITE. |
-| `_tactic_completion` | Once the count of BLACK cells equals the clue sum, all remaining unknowns become WHITE. |
-| `_tactic_edge_anchoring` | Extend or cap blocks anchored against line boundaries or known WHITE cells. |
-| `_line_is_feasible` | Fast structural check (minimum span, run lengths, cell counts) used before and after the other tactics. |
+1. `_all_valid_arrangements` enumerates every complete BLACK/WHITE assignment for the line that is consistent with the clue and any already-fixed cells, using a backtracking search with early pruning.
+2. `_tactic_brute_force` intersects those arrangements: any cell that is BLACK in every valid arrangement is marked BLACK; any cell that is WHITE in every valid arrangement is marked WHITE. If no valid arrangement exists the line is a contradiction.
 
 ### Stage 2 — trial and error
 
 If deduction alone cannot fully determine the board, the solver picks an unknown cell, hypothesises BLACK then WHITE, and recurses. Each branch independently re-runs Stage 1, which often cascades into many additional deductions. Contradictions are caught early and prune the search tree immediately. All unique solutions are collected via a hash-based deduplication set.
 
-> **Status:** The overall recursive structure and tactic dispatch are implemented. The individual tactic bodies are stubs and have not yet been filled in.
+## Tests
+
+```
+py -3.13 -m pytest nonogram_solver/test_solver.py -v
+```
+
+`test_solver.py` contains two parameterised test lists that are easy to extend:
+
+- `DEDUCE_LINE_CASES` — unit tests for `_deduce_line` covering overlap deductions, edge anchoring, partially-filled lines, and contradictions.
+- `SOLVE_CASES` — end-to-end tests for `solve()`, including puzzles with multiple solutions.

@@ -168,14 +168,11 @@ def _deduce(
 
 
 # ---------------------------------------------------------------------------
-# Line-level deduction — orchestrates tactics
+# Line-level deduction
 # ---------------------------------------------------------------------------
 
 def _deduce_line(line: list[int], clue: list[int]) -> list[int] | None:
-    """Apply deduction tactics to a single row or column.
-
-    Tactics are applied in order of cheapness.  Each tactic may fill in
-    additional BLACK or WHITE cells; the result is fed into the next tactic.
+    """Apply brute-force deduction to a single row or column.
 
     Args:
         line: Current cell states for the line (not mutated).
@@ -192,99 +189,96 @@ def _deduce_line(line: list[int], clue: list[int]) -> list[int] | None:
             return None
         return [WHITE] * len(line)
 
-    # Quick feasibility check before the more expensive tactics.
-    if not _line_is_feasible(line, clue):
-        return None
-
-    line = _tactic_overlap(line, clue)
-    if line is None:
-        return None
-
-    line = _tactic_completion(line, clue)
-    if line is None:
-        return None
-
-    line = _tactic_edge_anchoring(line, clue)
-    if line is None:
-        return None
-
-    # Re-validate after all tactics have run.
-    if not _line_is_feasible(line, clue):
-        return None
-
-    return line
+    return _tactic_brute_force(line, clue)
 
 
 # ---------------------------------------------------------------------------
-# Tactics (stubs — to be implemented)
+# Brute-force tactic
 # ---------------------------------------------------------------------------
 
-def _tactic_overlap(line: list[int], clue: list[int]) -> list[int] | None:
-    """Deduce cells that are forced BLACK or WHITE across all valid arrangements.
+def _all_valid_arrangements(line: list[int], clue: list[int]) -> list[list[int]]:
+    """Generate every complete arrangement of blocks consistent with the line.
 
-    Algorithm outline:
-    1. Left-pack: greedily place each block as far left as possible while
-       respecting existing BLACK/WHITE cells.  Record the start index of
-       each block in ``left_starts``.
-    2. Right-pack: symmetrically place each block as far right as possible.
-       Record start indices in ``right_starts``.
-    3. If no valid packing exists in either direction, return None.
-    4. For block i, the cells in the range
-           [right_starts[i],  left_starts[i] + clue[i] - 1]
-       are covered by block i in every valid arrangement, so mark them BLACK.
-    5. Any cell position not covered by any block in the left-pack AND not
-       covered by any block in the right-pack is guaranteed WHITE — mark it.
+    Args:
+        line: Current cell states (UNKNOWN / BLACK / WHITE).
+        clue: Ordered list of block lengths.
 
-    This single tactic handles the "overlap" and "complete determination"
-    cases described in many nonogram solving guides.
-
-    Returns None if no valid left- or right-packing exists.
+    Returns:
+        Every complete arrangement (all cells BLACK or WHITE) that places the
+        blocks exactly as specified and agrees with all fixed cells in line.
     """
-    return line  # stub
+    n = len(line)
+    results: list[list[int]] = []
+
+    def backtrack(block_idx: int, pos: int, arr: list[int]) -> None:
+        if block_idx == len(clue):
+            # All remaining cells must be WHITE.
+            for i in range(pos, n):
+                if line[i] == BLACK:
+                    return
+            results.append(arr + [WHITE] * (n - pos))
+            return
+
+        block_len = clue[block_idx]
+        is_last = block_idx + 1 == len(clue)
+        # Minimum space required after this block's separator for all remaining blocks.
+        remaining_min = sum(clue[block_idx + 1:]) + len(clue[block_idx + 1:])
+        max_start = n - block_len - remaining_min
+
+        for start in range(pos, max_start + 1):
+            # Each iteration adds one cell to the pre-gap; if it's BLACK the
+            # gap can never be all-WHITE for this or any larger start.
+            if start > pos and line[start - 1] == BLACK:
+                break
+
+            # Block cells must not be WHITE.
+            if any(line[i] == WHITE for i in range(start, start + block_len)):
+                continue
+
+            # The mandatory separator after a non-last block must not be BLACK.
+            if not is_last and line[start + block_len] == BLACK:
+                continue
+
+            pre_gap = [WHITE] * (start - pos)
+            block_cells = [BLACK] * block_len
+            new_arr = arr + pre_gap + block_cells
+
+            if is_last:
+                next_pos = start + block_len
+            else:
+                new_arr = new_arr + [WHITE]  # separator
+                next_pos = start + block_len + 1
+
+            backtrack(block_idx + 1, next_pos, new_arr)
+
+    backtrack(0, 0, [])
+    return results
 
 
-def _tactic_completion(line: list[int], clue: list[int]) -> list[int] | None:
-    """Fill remaining unknowns as WHITE once all BLACK cells are accounted for.
+def _tactic_brute_force(line: list[int], clue: list[int]) -> list[int] | None:
+    """Determine every cell forced BLACK or WHITE across all valid arrangements.
 
-    If the count of BLACK cells in the line already equals sum(clue), every
-    UNKNOWN cell must be WHITE.  Also validates that no BLACK run exceeds the
-    maximum block length in the clue.
+    Args:
+        line: Current cell states.
+        clue: Block lengths.
 
-    Returns None on contradiction.
+    Returns:
+        Updated line with newly-determined cells filled in, or None if no
+        valid arrangement exists (contradiction detected).
     """
-    return line  # stub
+    arrangements = _all_valid_arrangements(line, clue)
+    if not arrangements:
+        return None
 
+    result = list(line)
+    for i in range(len(line)):
+        if result[i] != UNKNOWN:
+            continue
+        values = {arr[i] for arr in arrangements}
+        if len(values) == 1:
+            result[i] = next(iter(values))
 
-def _tactic_edge_anchoring(line: list[int], clue: list[int]) -> list[int] | None:
-    """Extend or cap blocks that are anchored against line boundaries or WHITE cells.
-
-    Examples:
-    - If cell 0 is BLACK and the first clue is 3, cells 1 and 2 must also be
-      BLACK, and cell 3 must be WHITE.
-    - If the last two cells are BLACK and the last clue is 2, those cells form
-      the final block; the cell immediately before them must be WHITE.
-
-    This is a simplified version of _tactic_overlap restricted to the edges,
-    and is cheaper to compute.
-
-    Returns None on contradiction.
-    """
-    return line  # stub
-
-
-def _line_is_feasible(line: list[int], clue: list[int]) -> bool:
-    """Return False if the partial line provably violates the clue.
-
-    Performs cheap structural checks without enumerating all arrangements:
-    - The minimum span of the clue (sum + gaps) must not exceed line length.
-    - The number of existing BLACK cells must not exceed sum(clue).
-    - No contiguous BLACK run may be longer than the largest block in the clue.
-    - The number of remaining UNKNOWN + BLACK cells must be >= sum(clue) minus
-      already-placed BLACK cells (enough room for what remains).
-
-    Full arrangement-level consistency is handled by _tactic_overlap.
-    """
-    return True  # stub
+    return result
 
 
 # ---------------------------------------------------------------------------
