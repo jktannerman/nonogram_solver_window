@@ -117,6 +117,12 @@ SOLVE_CASES = [
         ],
         id="5x5_K",
     ),
+    pytest.param(
+        [[1]],
+        [[]],
+        [],
+        id="no_solution_contradiction",
+    ),
 ]
 
 

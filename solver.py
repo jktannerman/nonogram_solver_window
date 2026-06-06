@@ -9,7 +9,6 @@ A Board is a 2-D list indexed [row][col].
 """
 
 from __future__ import annotations
-import copy
 import logging
 
 # Cell states
@@ -54,7 +53,7 @@ def solve(
     )
 
     if initial_board is not None:
-        board: Board = copy.deepcopy(initial_board)
+        board: Board = [row[:] for row in initial_board]
     else:
         board = [[UNKNOWN] * cols for _ in range(rows)]
 
@@ -81,14 +80,14 @@ def _solve_recursive(
     """Recursive kernel: deduce, then branch on an unknown cell if needed.
 
     Args:
-        board: Current board state (will be deep-copied before mutation).
+        board: Current board state (will be copied before mutation).
         row_clues: Row constraints.
         col_clues: Column constraints.
         found: Accumulator for discovered solutions.
         seen: Set of already-recorded board keys for deduplication.
     """
     # Work on a private copy so sibling branches are independent.
-    board = copy.deepcopy(board)
+    board = [row[:] for row in board]
 
     # ------------------------------------------------------------------
     # Stage 1 — logical deduction
@@ -106,7 +105,7 @@ def _solve_recursive(
         key = _board_key(board)
         if key not in seen:
             seen.add(key)
-            found.append(copy.deepcopy(board))
+            found.append([row[:] for row in board])
         return
 
     # ------------------------------------------------------------------
@@ -122,7 +121,7 @@ def _solve_recursive(
     log.debug("branching on cell", extra={"row": r, "col": c})
 
     for value in (BLACK, WHITE):
-        branch = copy.deepcopy(board)
+        branch = [row[:] for row in board]
         branch[r][c] = value
         _solve_recursive(branch, row_clues, col_clues, found, seen)
 

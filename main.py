@@ -229,8 +229,7 @@ class NonogramApp:
         )
 
         saved_state = [row[:] for row in self.grid_state]
-        saved_solutions = self._solutions
-        saved_idx = self._solution_idx
+        saved_focus = self._focused_clue_entry()
 
         self._build_grid_ui()
         log.debug("grid UI rebuilt after resize")
@@ -241,13 +240,37 @@ class NonogramApp:
         self._restore_entry_clues(row_vals, col_vals)
         log.debug("clue values and grid state restored")
 
-        if saved_solutions:
-            self._solutions = saved_solutions
-            self._show_solution(saved_idx)
+        if saved_focus is not None:
+            kind, i, k = saved_focus
+            entries = self.row_clue_entries[i] if kind == "row" else self.col_clue_entries[i]
+            entries[k].focus_set()
+
+        if self._solutions:
+            self._show_solution(self._solution_idx)
             log.debug(
                 "solution display restored",
-                extra={"solution_idx": saved_idx, "total": len(saved_solutions)},
+                extra={"solution_idx": self._solution_idx, "total": len(self._solutions)},
             )
+
+    def _focused_clue_entry(self) -> tuple[str, int, int] | None:
+        """Return which clue entry currently has focus, or None.
+
+        Returns:
+            ('row', r, k) or ('col', c, k), identifying the entry by its
+            logical position so focus can be restored after a UI rebuild.
+        """
+        focused = self.root.focus_get()
+        if focused is None:
+            return None
+        for r, entries in enumerate(self.row_clue_entries):
+            for k, entry in enumerate(entries):
+                if entry is focused:
+                    return ("row", r, k)
+        for c, entries in enumerate(self.col_clue_entries):
+            for k, entry in enumerate(entries):
+                if entry is focused:
+                    return ("col", c, k)
+        return None
 
     def _save_entry_clues(self) -> tuple[list[list[str]], list[list[str]]]:
         """Return the raw text of every clue entry widget."""
@@ -342,6 +365,8 @@ class NonogramApp:
         self.rows = rows
         self.cols = cols
         self.grid_state = [[0] * cols for _ in range(rows)]
+        self._solutions = []
+        self._solution_idx = 0
         self._build_grid_ui()
 
     # -- Scale computation ----------------------------------------------------
@@ -437,8 +462,6 @@ class NonogramApp:
         tk.Frame(outer, height=3, bg=COLOR_GRID).pack(fill="x")
 
         # ---- Bottom half: solution display ----------------------------------
-        self._solutions = []
-        self._solution_idx = 0
         self._build_solution_panel(outer)
 
         log.debug(
@@ -539,7 +562,7 @@ class NonogramApp:
                 entry.bind("<Down>",     lambda e, _r=r:        self._row_focus_down(_r)       or "break")
                 entry.bind("<Up>",       lambda e, _r=r:        self._row_focus_up(_r)         or "break")
                 entry.bind("<Return>",   lambda e, _r=r:        self._row_enter(_r)            or "break")
-                entry.bind("<KeyRelease>", lambda e, _r=r, _k=k: e.char.isdigit() and self._row_focus_right(_r, _k))
+                entry.bind("<KeyPress>", lambda e, _r=r, _k=k: e.char.isdigit() and not e.widget.get() and e.widget.after(0, lambda: self._row_focus_right(_r, _k)))
                 row_entries.append(entry)
             self.row_clue_entries.append(row_entries)
 
@@ -560,7 +583,7 @@ class NonogramApp:
                 entry.bind("<Right>",    lambda e, _c=c:        self._col_focus_right(_c)    or "break")
                 entry.bind("<Left>",     lambda e, _c=c:        self._col_focus_left(_c)     or "break")
                 entry.bind("<Return>",   lambda e, _c=c:        self._col_enter(_c)          or "break")
-                entry.bind("<KeyRelease>", lambda e, _c=c, _k=k: e.char.isdigit() and self._col_focus_down(_c, _k))
+                entry.bind("<KeyPress>", lambda e, _c=c, _k=k: e.char.isdigit() and not e.widget.get() and e.widget.after(0, lambda: self._col_focus_down(_c, _k)))
                 col_entries.append(entry)
             self.col_clue_entries.append(col_entries)
 
