@@ -80,6 +80,58 @@ def configure_logging() -> None:
 log = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Pure layout helpers (tested independently of tkinter)
+# ---------------------------------------------------------------------------
+
+def _calc_cell_size(win_w: int, win_h: int, rows: int, cols: int) -> int:
+    """Return the cell size that fits a rows×cols grid in a win_w×win_h window.
+
+    Args:
+        win_w: Window width in pixels.
+        win_h: Window height in pixels.
+        rows: Number of grid rows.
+        cols: Number of grid columns.
+
+    Returns:
+        Cell size in pixels, clamped to [8, _BASE_CELL].
+    """
+    max_row_clues = math.ceil(cols / 2)
+    max_col_clues = math.ceil(rows / 2)
+    combined_h = (max_col_clues + 2 * rows) * _BASE_CELL
+    top_w      = (max_row_clues + cols) * _BASE_CELL
+    avail_h = win_h - _OVERHEAD_H
+    avail_w = win_w - _OVERHEAD_W
+    raw_s = min(avail_h / combined_h, avail_w / top_w)
+    s = min(raw_s, 1.0)
+    if s < 1.0:
+        s *= 0.92
+    return max(8, int(_BASE_CELL * s))
+
+
+def _calc_canvas_dims(
+    cell_size: int, rows: int, cols: int
+) -> tuple[int, int, int, int]:
+    """Return canvas pixel dimensions for the given cell size and grid shape.
+
+    Args:
+        cell_size: Cell size in pixels.
+        rows: Number of grid rows.
+        cols: Number of grid columns.
+
+    Returns:
+        (input_w, input_h, sol_w, sol_h) — input is the clue+grid canvas,
+        sol is the read-only solution canvas.
+    """
+    max_row_clues = math.ceil(cols / 2)
+    max_col_clues = math.ceil(rows / 2)
+    input_w = (max_row_clues + cols) * cell_size + GRID_LINE_W
+    input_h = (max_col_clues + rows) * cell_size + GRID_LINE_W
+    sol_w   = cols * cell_size + GRID_LINE_W
+    sol_h   = rows * cell_size + GRID_LINE_W
+    return input_w, input_h, sol_w, sol_h
+
+
 class NonogramApp:
     """Top-level controller for the Nonogram Solver.
 
@@ -295,36 +347,12 @@ class NonogramApp:
     # -- Scale computation ----------------------------------------------------
 
     def _compute_scale(self) -> None:
-        """Set _cell_size / _clue_box_size / _clue_font to fit the current window.
-
-        Uses the actual window dimensions (updated via update_idletasks) so the
-        result is correct whether the window is maximized, restored, or resized.
-        Scale is capped at 1× so small grids keep their natural size.  A small
-        safety factor (0.92) guards against imprecision in the overhead estimate.
-        """
+        """Set _cell_size / _clue_box_size / _clue_font to fit the current window."""
         win_h = self.root.winfo_height()
         win_w = self.root.winfo_width()
 
-        # Combined natural height of both canvases at 1× scale.
-        # Clue boxes are the same size as grid cells, so everything uses _BASE_CELL.
-        #   top    = column-clue strip + grid rows
-        #   bottom = grid rows only (no clue area above it)
-        combined_h = (self._max_col_clues + 2 * self.rows) * _BASE_CELL
-
-        # Top canvas is wider (includes row-clue strip), so it sets the width limit.
-        top_w = (self._max_row_clues + self.cols) * _BASE_CELL
-
-        avail_h = win_h - _OVERHEAD_H
-        avail_w = win_w - _OVERHEAD_W
-
-        raw_s = min(avail_h / combined_h, avail_w / top_w)
-        s = min(raw_s, 1.0)
-        if s < 1.0:
-            s *= 0.92   # safety margin only when scaling down
-
-        self._cell_size     = max(8, int(_BASE_CELL * s))
-        self._clue_box_size = self._cell_size   # clue slots match grid cells exactly
-        # Target ~75 % of the entry height (cell_size − 4 px); 1 pt ≈ 1.33 px on 96 DPI.
+        self._cell_size     = _calc_cell_size(win_w, win_h, self.rows, self.cols)
+        self._clue_box_size = self._cell_size
         font_pt             = max(6, int((self._cell_size - 4) * 0.75 / 1.333))
         self._clue_font     = ("Consolas", font_pt)
 
@@ -333,10 +361,6 @@ class NonogramApp:
             extra={
                 "win_w": win_w,
                 "win_h": win_h,
-                "avail_w": avail_w,
-                "avail_h": avail_h,
-                "raw_scale": round(raw_s, 4),
-                "applied_scale": round(s, 4),
                 "cell_size": self._cell_size,
                 "font_pt": font_pt,
             },
@@ -358,8 +382,7 @@ class NonogramApp:
         self._row_clue_w = self._max_row_clues * self._clue_box_size
         self._col_clue_h = self._max_col_clues * self._clue_box_size
 
-        total_w = self._row_clue_w + self.cols * self._cell_size + GRID_LINE_W
-        total_h = self._col_clue_h + self.rows * self._cell_size + GRID_LINE_W
+        total_w, total_h, _, _ = _calc_canvas_dims(self._cell_size, self.rows, self.cols)
 
         log.info(
             "building grid UI",
@@ -724,8 +747,7 @@ class NonogramApp:
 
     def _build_solution_panel(self, parent: tk.Frame) -> None:
         """Build the bottom-half solution display inside parent."""
-        sol_total_w = self.cols * self._cell_size + GRID_LINE_W
-        sol_total_h = self.rows * self._cell_size + GRID_LINE_W
+        _, _, sol_total_w, sol_total_h = _calc_canvas_dims(self._cell_size, self.rows, self.cols)
         log.debug(
             "building solution panel",
             extra={"canvas_w": sol_total_w, "canvas_h": sol_total_h},
