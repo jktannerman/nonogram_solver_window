@@ -2,8 +2,11 @@
 """Nonogram solver -- GUI for grid input and visualisation."""
 
 from __future__ import annotations
+import json
+import logging
 import math
 import tkinter as tk
+from pathlib import Path
 from tkinter import messagebox
 
 from solver import solve
@@ -33,6 +36,48 @@ GRID_LINE_W = 4    # px; not scaled
 # button panel (~100 px) plus container padding.
 _OVERHEAD_H = 40   # px; divider + vertical padding
 _OVERHEAD_W = 120  # px; side button panel + horizontal padding
+
+
+# ---------------------------------------------------------------------------
+# Logging setup
+# ---------------------------------------------------------------------------
+
+_RECORD_BUILT_INS = frozenset(vars(logging.makeLogRecord({})))
+
+
+class _JsonFormatter(logging.Formatter):
+    """Formats each log record as a single-line JSON object."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        obj: dict[str, object] = {
+            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
+            "ms": int(record.msecs),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        for key, val in record.__dict__.items():
+            if key not in _RECORD_BUILT_INS and not key.startswith("_"):
+                obj[key] = val
+        if record.exc_info:
+            obj["exc"] = self.formatException(record.exc_info)
+        return json.dumps(obj, ensure_ascii=False)
+
+
+def configure_logging() -> None:
+    """Configure root logger: JSON to file (DEBUG+) only."""
+    log_path = Path(__file__).parent / "nonogram.log"
+
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+
+    fh = logging.FileHandler(log_path, encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(_JsonFormatter())
+    root.addHandler(fh)
+
+
+log = logging.getLogger(__name__)
 
 
 class NonogramApp:
@@ -84,6 +129,7 @@ class NonogramApp:
         self._resize_job: str | None = None
         self._last_win_size: tuple[int, int] = (0, 0)
 
+        log.info("NonogramApp initialised")
         self._show_setup()
         self.root.bind("<Configure>", self._on_root_configure)
 
@@ -96,6 +142,15 @@ class NonogramApp:
         new_size = (event.width, event.height)
         if new_size == self._last_win_size:
             return
+        log.debug(
+            f"window resizing to {event.width}x{event.height}",
+            extra={
+                "from_w": self._last_win_size[0],
+                "from_h": self._last_win_size[1],
+                "to_w": event.width,
+                "to_h": event.height,
+            },
+        )
         self._last_win_size = new_size
         if self._resize_job is not None:
             self.root.after_cancel(self._resize_job)
@@ -104,17 +159,43 @@ class NonogramApp:
     def _on_resize_settled(self) -> None:
         """Rebuild the grid UI at the new window size, preserving all state."""
         self._resize_job = None
+        win_w = self.root.winfo_width()
+        win_h = self.root.winfo_height()
+        # Pin the window at the settled size so tkinter's geometry manager cannot
+        # shrink it to fit the new (smaller) canvas after the rebuild.
+        self.root.geometry(f"{win_w}x{win_h}")
+        log.info(
+            f"resize settled at {win_w}x{win_h} — rebuilding UI",
+            extra={"win_w": win_w, "win_h": win_h, "rows": self.rows, "cols": self.cols},
+        )
+
         row_vals, col_vals = self._save_entry_clues()
+        log.debug(
+            "clue values saved",
+            extra={"row_clue_boxes": sum(len(r) for r in row_vals),
+                   "col_clue_boxes": sum(len(c) for c in col_vals)},
+        )
+
         saved_state = [row[:] for row in self.grid_state]
         saved_solutions = self._solutions
         saved_idx = self._solution_idx
+
         self._build_grid_ui()
+        log.debug("grid UI rebuilt after resize")
+
         self.grid_state = saved_state
         self._sync_grid_colors()
+
         self._restore_entry_clues(row_vals, col_vals)
+        log.debug("clue values and grid state restored")
+
         if saved_solutions:
             self._solutions = saved_solutions
             self._show_solution(saved_idx)
+            log.debug(
+                "solution display restored",
+                extra={"solution_idx": saved_idx, "total": len(saved_solutions)},
+            )
 
     def _save_entry_clues(self) -> tuple[list[list[str]], list[list[str]]]:
         """Return the raw text of every clue entry widget."""
@@ -142,6 +223,8 @@ class NonogramApp:
     def _sync_grid_colors(self) -> None:
         """Repaint input grid cells to match self.grid_state after a rebuild."""
         assert self.canvas is not None
+        cells = self.rows * self.cols
+        log.debug("syncing input grid colors", extra={"cells": cells})
         for r in range(self.rows):
             for c in range(self.cols):
                 self.canvas.itemconfig(
@@ -157,6 +240,8 @@ class NonogramApp:
             self._current_frame.destroy()
         self.canvas = None
         self._solution_canvas = None
+
+        log.info("showing setup screen")
 
         frame = tk.Frame(self.root, padx=40, pady=40, bg=COLOR_BG)
         frame.pack(fill="both", expand=True)
@@ -200,6 +285,7 @@ class NonogramApp:
             messagebox.showerror("Out of range", "Rows and columns must each be between 1 and 50.")
             return
 
+        log.info("generating grid", extra={"rows": rows, "cols": cols})
         self.root.unbind("<Return>")
         self.rows = rows
         self.cols = cols
@@ -216,7 +302,6 @@ class NonogramApp:
         Scale is capped at 1× so small grids keep their natural size.  A small
         safety factor (0.92) guards against imprecision in the overhead estimate.
         """
-        self.root.update_idletasks()
         win_h = self.root.winfo_height()
         win_w = self.root.winfo_width()
 
@@ -243,10 +328,27 @@ class NonogramApp:
         font_pt             = max(6, int((self._cell_size - 4) * 0.75 / 1.333))
         self._clue_font     = ("Consolas", font_pt)
 
+        log.debug(
+            "scale computed",
+            extra={
+                "win_w": win_w,
+                "win_h": win_h,
+                "avail_w": avail_w,
+                "avail_h": avail_h,
+                "raw_scale": round(raw_s, 4),
+                "applied_scale": round(s, 4),
+                "cell_size": self._cell_size,
+                "font_pt": font_pt,
+            },
+        )
+
     # -- Grid screen ----------------------------------------------------------
 
     def _build_grid_ui(self) -> None:
         """Build the interactive nonogram grid (top half) and solution panel (bottom half)."""
+        # Flush pending geometry events before destroying content so _compute_scale
+        # reads the correct window dimensions rather than a collapsed intermediate state.
+        self.root.update_idletasks()
         if self._current_frame is not None:
             self._current_frame.destroy()
 
@@ -256,6 +358,22 @@ class NonogramApp:
         self._row_clue_w = self._max_row_clues * self._clue_box_size
         self._col_clue_h = self._max_col_clues * self._clue_box_size
 
+        total_w = self._row_clue_w + self.cols * self._cell_size + GRID_LINE_W
+        total_h = self._col_clue_h + self.rows * self._cell_size + GRID_LINE_W
+
+        log.info(
+            "building grid UI",
+            extra={
+                "rows": self.rows,
+                "cols": self.cols,
+                "cell_size": self._cell_size,
+                "canvas_w": total_w,
+                "canvas_h": total_h,
+                "max_row_clues": self._max_row_clues,
+                "max_col_clues": self._max_col_clues,
+            },
+        )
+
         outer = tk.Frame(self.root, bg=COLOR_BG)
         outer.pack(fill="both", expand=True)
         self._current_frame = outer
@@ -263,9 +381,6 @@ class NonogramApp:
         # ---- Top half: input grid -------------------------------------------
         top_frame = tk.Frame(outer, bg=COLOR_BG)
         top_frame.pack(fill="x")
-
-        total_w = self._row_clue_w + self.cols * self._cell_size + GRID_LINE_W
-        total_h = self._col_clue_h + self.rows * self._cell_size + GRID_LINE_W
 
         # Canvas and its right-side buttons travel together as a centered unit.
         top_container = tk.Frame(top_frame, bg=COLOR_BG)
@@ -303,10 +418,17 @@ class NonogramApp:
         self._solution_idx = 0
         self._build_solution_panel(outer)
 
+        log.debug(
+            "grid UI build complete",
+            extra={"rows": self.rows, "cols": self.cols, "cell_size": self._cell_size},
+        )
+
     def _draw_cells(self) -> None:
         """Draw all grid cells as filled rectangles without outlines."""
         assert self.canvas is not None
         self.cell_rects = {}
+        count = self.rows * self.cols
+        log.debug("drawing input grid cells", extra={"rows": self.rows, "cols": self.cols, "count": count})
         for r in range(self.rows):
             for c in range(self.cols):
                 x0 = self._row_clue_w + c * self._cell_size
@@ -326,6 +448,18 @@ class NonogramApp:
         gy = self._col_clue_h
         x_end = gx + self.cols * self._cell_size
         y_end = gy + self.rows * self._cell_size
+
+        h_lines = self.rows + 1
+        v_lines = self.cols + 1
+        log.debug(
+            "drawing input grid lines",
+            extra={
+                "h_lines": h_lines,
+                "v_lines": v_lines,
+                "clue_separators": 2,
+                "total_lines": h_lines + v_lines + 2,
+            },
+        )
 
         for r in range(self.rows + 1):
             y = gy + r * self._cell_size
@@ -352,6 +486,18 @@ class NonogramApp:
         assert self.canvas is not None
         # Entries fill nearly the full cell slot; the 4 px gap matches GRID_LINE_W.
         ew = max(8, self._cell_size - 4)
+
+        row_entry_count = self.rows * self._max_row_clues
+        col_entry_count = self.cols * self._max_col_clues
+        log.debug(
+            "creating clue entry widgets",
+            extra={
+                "row_entries": row_entry_count,
+                "col_entries": col_entry_count,
+                "total_entries": row_entry_count + col_entry_count,
+                "entry_px": ew,
+            },
+        )
 
         # Row clue entries — created first so they appear first in Tab order.
         self.row_clue_entries = []
@@ -523,7 +669,12 @@ class NonogramApp:
         assert self._next_btn is not None
 
         row_clues, col_clues = self._collect_clues()
+        log.info(
+            "solve requested",
+            extra={"rows": self.rows, "cols": self.cols},
+        )
         self._solutions = solve(row_clues, col_clues, self.grid_state)
+        log.info("solve complete", extra={"solutions": len(self._solutions)})
 
         if self._solutions:
             self._show_solution(0)
@@ -556,6 +707,7 @@ class NonogramApp:
 
         self._solution_idx = idx
         n = len(self._solutions)
+        log.debug("showing solution", extra={"idx": idx + 1, "total": n})
         self._solution_label.set(f"Solution {idx + 1} of {n}")
         self._prev_btn.config(state="normal" if idx > 0 else "disabled")
         self._next_btn.config(state="normal" if idx < n - 1 else "disabled")
@@ -572,11 +724,15 @@ class NonogramApp:
 
     def _build_solution_panel(self, parent: tk.Frame) -> None:
         """Build the bottom-half solution display inside parent."""
-        bottom_frame = tk.Frame(parent, bg=COLOR_BG)
-        bottom_frame.pack(fill="both", expand=True)
-
         sol_total_w = self.cols * self._cell_size + GRID_LINE_W
         sol_total_h = self.rows * self._cell_size + GRID_LINE_W
+        log.debug(
+            "building solution panel",
+            extra={"canvas_w": sol_total_w, "canvas_h": sol_total_h},
+        )
+
+        bottom_frame = tk.Frame(parent, bg=COLOR_BG)
+        bottom_frame.pack(fill="both", expand=True)
 
         # Canvas and its right-side nav buttons travel together as a centered unit.
         bot_container = tk.Frame(bottom_frame, bg=COLOR_BG)
@@ -621,6 +777,19 @@ class NonogramApp:
         assert self._solution_canvas is not None
         self._sol_cell_rects = {}
 
+        count = self.rows * self.cols
+        h_lines = self.rows + 1
+        v_lines = self.cols + 1
+        log.debug(
+            "drawing solution grid",
+            extra={
+                "cells": count,
+                "h_lines": h_lines,
+                "v_lines": v_lines,
+                "total_lines": h_lines + v_lines,
+            },
+        )
+
         for r in range(self.rows):
             for c in range(self.cols):
                 x0 = c * self._cell_size
@@ -643,10 +812,13 @@ class NonogramApp:
 
 def main() -> None:
     """Launch the Nonogram Solver GUI."""
+    configure_logging()
+    log.info("Nonogram Solver starting")
     root = tk.Tk()
     root.state("zoomed")   # start maximized so window dimensions are known at grid build time
     NonogramApp(root)
     root.mainloop()
+    log.info("Nonogram Solver exiting")
 
 
 if __name__ == "__main__":

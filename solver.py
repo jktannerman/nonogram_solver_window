@@ -10,6 +10,7 @@ A Board is a 2-D list indexed [row][col].
 
 from __future__ import annotations
 import copy
+import logging
 
 # Cell states
 UNKNOWN = 0
@@ -17,6 +18,8 @@ BLACK   = 1
 WHITE   = 2
 
 Board = list[list[int]]
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +48,11 @@ def solve(
     rows = len(row_clues)
     cols = len(col_clues)
 
+    log.info(
+        "solve started",
+        extra={"rows": rows, "cols": cols, "has_initial": initial_board is not None},
+    )
+
     if initial_board is not None:
         board: Board = copy.deepcopy(initial_board)
     else:
@@ -54,6 +62,8 @@ def solve(
     seen: set[tuple[tuple[int, ...], ...]] = set()
 
     _solve_recursive(board, row_clues, col_clues, found, seen)
+
+    log.info("solve finished", extra={"solutions_found": len(found)})
     return found
 
 
@@ -109,6 +119,7 @@ def _solve_recursive(
     # subtree immediately.
     # ------------------------------------------------------------------
     r, c = _pick_branch_cell(board)
+    log.debug("branching on cell", extra={"row": r, "col": c})
 
     for value in (BLACK, WHITE):
         branch = copy.deepcopy(board)
@@ -140,30 +151,42 @@ def _deduce(
         False if a contradiction is detected (board state is unsolvable),
         True otherwise.
     """
+    rows = len(board)
+    cols = len(col_clues)
+    passes = 0
+
     changed = True
     while changed:
+        passes += 1
         changed = False
 
         for r, clue in enumerate(row_clues):
             updated = _deduce_line(board[r], clue)
             if updated is None:
+                log.debug(
+                    "deduction contradiction in row",
+                    extra={"passes": passes, "row": r},
+                )
                 return False
             if updated != board[r]:
                 board[r] = updated
                 changed = True
 
-        cols = len(col_clues)
-        rows = len(board)
         for c, clue in enumerate(col_clues):
             col = [board[r][c] for r in range(rows)]
             updated = _deduce_line(col, clue)
             if updated is None:
+                log.debug(
+                    "deduction contradiction in col",
+                    extra={"passes": passes, "col": c},
+                )
                 return False
             for r in range(rows):
                 if board[r][c] != updated[r]:
                     board[r][c] = updated[r]
                     changed = True
 
+    log.debug("deduction stable", extra={"passes": passes})
     return True
 
 
